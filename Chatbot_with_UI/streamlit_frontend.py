@@ -12,14 +12,49 @@ def generate_thread_id():
 
 # Function to start a new chat
 def reset_chat():
-    thread_id = generate_thread_id()
+    # Do not create another empty thread when the current chat has no messages.
+    # This prevents multiple "New Chat" entries in the sidebar.
+    if st.session_state['message_history']:
+        thread_id = generate_thread_id()
+    else:
+        thread_id = st.session_state['thread_id']
+
     st.session_state['thread_id'] = thread_id
-    add_thread(st.session_state['thread_id']) 
+    add_thread(thread_id)
     st.session_state['message_history'] = []
     
 def add_thread(thread_id):
     if thread_id not in st.session_state['chat_threads']:
         st.session_state['chat_threads'].append(thread_id)
+
+    if thread_id not in st.session_state['chat_titles']:
+        st.session_state['chat_titles'][thread_id] = "New Chat"
+
+
+def remove_duplicate_new_chats():
+    """Keep one placeholder chat and remove duplicates from older sessions."""
+    placeholder_threads = [
+        thread_id
+        for thread_id in st.session_state['chat_threads']
+        if st.session_state['chat_titles'].get(thread_id) == "New Chat"
+    ]
+
+    if len(placeholder_threads) <= 1:
+        return
+
+    # Prefer the currently selected placeholder; otherwise keep the first one.
+    keep_thread = st.session_state['thread_id']
+    if keep_thread not in placeholder_threads:
+        keep_thread = placeholder_threads[0]
+
+    st.session_state['chat_threads'] = [
+        thread_id
+        for thread_id in st.session_state['chat_threads']
+        if thread_id not in placeholder_threads or thread_id == keep_thread
+    ]
+    for thread_id in placeholder_threads:
+        if thread_id != keep_thread:
+            st.session_state['chat_titles'].pop(thread_id, None)
         
 # This function is loading conversations respectively.       
 def load_conversation(thread_id):
@@ -30,8 +65,13 @@ if 'thread_id' not in st.session_state:
     
 if 'chat_threads' not in st.session_state:
     st.session_state['chat_threads'] = []    
+
+# implementing the logic for giving each chat a name.
+if 'chat_titles' not in st.session_state:
+    st.session_state['chat_titles'] = {}
     
 add_thread(st.session_state['thread_id'])    
+remove_duplicate_new_chats()
     
 if 'message_history' not in st.session_state:
     st.session_state['message_history'] = []
@@ -45,7 +85,14 @@ if st.sidebar.button("New Chat"):
 st.sidebar.header("My Conversations")
 
 for thread_id in st.session_state['chat_threads']:
-    if st.sidebar.button(str(thread_id)):
+    title = st.session_state['chat_titles'].get(thread_id, "New Chat")
+
+    # Empty chats are available through the main New Chat button, so do not
+    # list their placeholder title as a conversation.
+    if title == "New Chat":
+        continue
+
+    if st.sidebar.button(title, key=f"chat_{thread_id}"):
         st.session_state['thread_id'] = thread_id
         messages = load_conversation(thread_id)
         
@@ -58,7 +105,7 @@ for thread_id in st.session_state['chat_threads']:
             temp_messages.append({'role':role, 'content':message.content})
         st.session_state['message_history'] = temp_messages            
 
-    CONFIG = {'configurable': {'thread_id': st.session_state['thread_id']}}
+CONFIG = {'configurable': {'thread_id': st.session_state['thread_id']}}
 
 for message in st.session_state['message_history']:
     with st.chat_message(message['role']):
@@ -67,6 +114,15 @@ for message in st.session_state['message_history']:
 user_input = st.chat_input('Type Here')
 
 if user_input:
+    is_first_message = len(st.session_state['message_history']) == 0
+
+    if is_first_message:
+        title = " ".join(user_input.split())
+        title = title[:40] + ("..." if len(title) > 40 else "")
+
+        st.session_state['chat_titles'][
+            st.session_state['thread_id']
+        ] = title or "New Chat"
     
     st.session_state['message_history'].append({'role':'user', 'content': user_input})
     with st.chat_message('user'):
@@ -77,28 +133,18 @@ if user_input:
     # ai_message = response['messages'][-1].content 
                     
     with st.chat_message('assistant'):
-        ai_message = st.write_stream(
-            message_chunk.content for message_chunk, metadata in chatbot.stream(
-                {'messages': [HumanMessage(content=user_input)]},
-                config=CONFIG,
-                stream_mode='messages'
-)
-        )
+        response_placeholder = st.empty()
+        response_text = ""
+        for message_chunk, metadata in chatbot.stream(
+            {'messages': [HumanMessage(content=user_input)]},
+            config=CONFIG,
+            stream_mode='messages'
+        ):
+            response_text += message_chunk.content
+            response_placeholder.markdown(response_text)
+
+        ai_message = response_text
         
-    st.session_state['message_history'].append({'role':'assistant', 'content': ai_message})       
-        
-
-
-
-# "Practicing streamlit code."
-# with st.chat_message('user'):
-#     st.text('Hello')
-    
-# with st.chat_message('assistant'):
-#     st.text('How can i assist u today')    
-
-# user_input = st.chat_input('Type Here')
-
-# if user_input:
-#     with st.chat_message('user'):
-#         st.text(user_input)          
+    st.session_state['message_history'].append({'role':'assistant', 'content': ai_message})
+    if is_first_message:
+        st.rerun()
