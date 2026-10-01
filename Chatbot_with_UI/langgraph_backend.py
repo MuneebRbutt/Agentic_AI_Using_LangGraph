@@ -1,41 +1,10 @@
-from langgraph.graph import StateGraph, START, END
-from typing import TypedDict, Annotated
-from langchain_core.messages import BaseMessage, HumanMessage
-from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph.message import add_messages
-from dotenv import load_dotenv
+"""Compatibility exports for the original in-memory tutorial backend.
 
-load_dotenv()
-model = ChatOpenAI()
+New code should use chatbot.service.create_memory_service for explicit ownership.
+"""
 
-from langgraph.graph.message import add_messages
+from chatbot.service import create_memory_service
 
-class ChatState(TypedDict):
-    
-    messages : Annotated[list[BaseMessage], add_messages]
-    
-def chat_node(state: ChatState):
-    messages = state['messages']
-    # Creating a state for maintaining the messagess
-    
-    response = model.invoke(messages)
-    
-    return {'messages': [response]}
-    
-checkpointer = InMemorySaver()
-
-graph = StateGraph(ChatState)
-
-graph.add_node('chat_node', chat_node)
-
-graph.add_edge(START, 'chat_node')
-graph.add_edge('chat_node', END)
-
-chatbot = graph.compile(checkpointer=checkpointer)
-
-
-
-
-
-
+_service = create_memory_service()
+chatbot = _service.graph
+checkpointer = _service.checkpointer
