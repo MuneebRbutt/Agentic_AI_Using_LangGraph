@@ -41,6 +41,17 @@ footer {
   border-right: 1px solid rgba(255, 255, 255, 0.075);
 }
 
+/* Keep the expanded sidebar wide enough for its branding and chat titles.
+   The selector only applies while open, so Streamlit's collapse control works. */
+[data-testid="stSidebar"][aria-expanded="true"] {
+  width: 18rem !important;
+  min-width: 18rem !important;
+  max-width: 18rem !important;
+  flex-shrink: 0 !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
 [data-testid="stSidebar"] > div:first-child {
   background: transparent;
 }
@@ -360,6 +371,11 @@ section[data-testid="stMain"] .block-container {
 }
 
 @media (max-width: 700px) {
+  [data-testid="stSidebar"][aria-expanded="true"] {
+    width: min(19rem, 86vw) !important;
+    min-width: min(19rem, 86vw) !important;
+    max-width: min(19rem, 86vw) !important;
+  }
   section[data-testid="stMain"] .block-container { padding: 2rem 1rem 6rem; }
   .welcome-wrap { margin-top: 4rem; }
   .welcome-title { font-size: clamp(2rem, 8vw, 2.7rem); }
