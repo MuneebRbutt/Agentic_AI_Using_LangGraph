@@ -1,15 +1,15 @@
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.message import add_messages
 from dotenv import load_dotenv
+from pathlib import Path
+import sqlite3
 
 load_dotenv()
 model = ChatOpenAI()
-
-from langgraph.graph.message import add_messages
 
 class ChatState(TypedDict):
     
@@ -22,8 +22,10 @@ def chat_node(state: ChatState):
     response = model.invoke(messages)
     
     return {'messages': [response]}
-    
-checkpointer = InMemorySaver()
+
+DATABASE_PATH = Path(__file__).resolve().with_name('chatbot.db')
+conn = sqlite3.connect(database=DATABASE_PATH, check_same_thread=False)
+checkpointer = SqliteSaver(conn=conn)
 
 graph = StateGraph(ChatState)
 
@@ -34,8 +36,10 @@ graph.add_edge('chat_node', END)
 
 chatbot = graph.compile(checkpointer=checkpointer)
 
-
-
-
-
-
+def retrieve_all_threads():
+    # SqliteSaver lists newest checkpoints first. Preserve that order while
+    # deduplicating threads so the latest conversation can be restored.
+    all_threads = {}
+    for checkpoint in checkpointer.list(None):
+        all_threads.setdefault(str(checkpoint.config['configurable']['thread_id']), None)
+    return list(all_threads)

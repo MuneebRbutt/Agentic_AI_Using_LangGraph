@@ -1,5 +1,5 @@
 import streamlit as st 
-from langgraph_backend import chatbot
+from langgraph_database_backend import chatbot, retrieve_all_threads
 from langchain_core.messages import HumanMessage
 import uuid # Importing this to generate dynamic threadids rather than hardcoating it for each conversation.
 
@@ -7,8 +7,12 @@ import uuid # Importing this to generate dynamic threadids rather than hardcoati
 
 # Utility Functions
 def generate_thread_id():
-    thread_id = uuid.uuid4()
-    return thread_id
+    return str(uuid.uuid4())
+
+
+def conversation_title(text):
+    title = " ".join(text.split())
+    return title[:40] + ("..." if len(title) > 40 else "") or "New Chat"
 
 # Function to start a new chat
 def reset_chat():
@@ -22,59 +26,53 @@ def reset_chat():
     st.session_state['thread_id'] = thread_id
     add_thread(thread_id)
     st.session_state['message_history'] = []
+    st.query_params['thread_id'] = thread_id
     
 def add_thread(thread_id):
     if thread_id not in st.session_state['chat_threads']:
         st.session_state['chat_threads'].append(thread_id)
 
-    if thread_id not in st.session_state['chat_titles']:
-        st.session_state['chat_titles'][thread_id] = "New Chat"
-
-
-def remove_duplicate_new_chats():
-    """Keep one placeholder chat and remove duplicates from older sessions."""
-    placeholder_threads = [
-        thread_id
-        for thread_id in st.session_state['chat_threads']
-        if st.session_state['chat_titles'].get(thread_id) == "New Chat"
-    ]
-
-    if len(placeholder_threads) <= 1:
-        return
-
-    # Prefer the currently selected placeholder; otherwise keep the first one.
-    keep_thread = st.session_state['thread_id']
-    if keep_thread not in placeholder_threads:
-        keep_thread = placeholder_threads[0]
-
-    st.session_state['chat_threads'] = [
-        thread_id
-        for thread_id in st.session_state['chat_threads']
-        if thread_id not in placeholder_threads or thread_id == keep_thread
-    ]
-    for thread_id in placeholder_threads:
-        if thread_id != keep_thread:
-            st.session_state['chat_titles'].pop(thread_id, None)
-        
 # This function is loading conversations respectively.       
 def load_conversation(thread_id):
     return chatbot.get_state(config={'configurable': {'thread_id': thread_id}}).values.get('messages', [])
 
-if 'thread_id' not in st.session_state:
-    st.session_state['thread_id'] = generate_thread_id()
-    
-if 'chat_threads' not in st.session_state:
-    st.session_state['chat_threads'] = []    
 
-# implementing the logic for giving each chat a name.
+def select_conversation(thread_id):
+    st.session_state['thread_id'] = thread_id
+    st.query_params['thread_id'] = thread_id
+    st.session_state['message_history'] = [
+        {'role': 'user' if isinstance(message, HumanMessage) else 'assistant',
+         'content': message.content}
+        for message in load_conversation(thread_id)
+    ]
+
+
+if 'chat_threads' not in st.session_state:
+    st.session_state['chat_threads'] = retrieve_all_threads()    
+
+# Session state is lost on refresh. Rebuild titles from persisted messages.
 if 'chat_titles' not in st.session_state:
     st.session_state['chat_titles'] = {}
-    
-add_thread(st.session_state['thread_id'])    
-remove_duplicate_new_chats()
-    
+    for thread_id in st.session_state['chat_threads']:
+        for message in load_conversation(thread_id):
+            if isinstance(message, HumanMessage):
+                st.session_state['chat_titles'][thread_id] = conversation_title(message.content)
+                break
+
+if 'thread_id' not in st.session_state:
+    requested_thread = st.query_params.get('thread_id')
+    if requested_thread not in st.session_state['chat_threads']:
+        # An empty New Chat has no checkpoint yet, but its UUID can survive refresh.
+        try:
+            requested_thread = str(uuid.UUID(requested_thread))
+        except (ValueError, TypeError, AttributeError):
+            requested_thread = next(iter(st.session_state['chat_titles']), generate_thread_id())
+    st.session_state['thread_id'] = requested_thread
+
+add_thread(st.session_state['thread_id'])
+
 if 'message_history' not in st.session_state:
-    st.session_state['message_history'] = []
+    select_conversation(st.session_state['thread_id'])
     
     
     
@@ -85,25 +83,15 @@ if st.sidebar.button("New Chat"):
 st.sidebar.header("My Conversations")
 
 for thread_id in st.session_state['chat_threads']:
-    title = st.session_state['chat_titles'].get(thread_id, "New Chat")
+    title = st.session_state['chat_titles'].get(thread_id)
 
     # Empty chats are available through the main New Chat button, so do not
     # list their placeholder title as a conversation.
-    if title == "New Chat":
+    if title is None:
         continue
 
     if st.sidebar.button(title, key=f"chat_{thread_id}"):
-        st.session_state['thread_id'] = thread_id
-        messages = load_conversation(thread_id)
-        
-        temp_messages = []
-        for message in messages:
-            if isinstance(message, HumanMessage):
-                role = 'user'
-            else:
-                role = 'assistant'
-            temp_messages.append({'role':role, 'content':message.content})
-        st.session_state['message_history'] = temp_messages            
+        select_conversation(thread_id)
 
 CONFIG = {'configurable': {'thread_id': st.session_state['thread_id']}}
 
@@ -117,12 +105,9 @@ if user_input:
     is_first_message = len(st.session_state['message_history']) == 0
 
     if is_first_message:
-        title = " ".join(user_input.split())
-        title = title[:40] + ("..." if len(title) > 40 else "")
-
         st.session_state['chat_titles'][
             st.session_state['thread_id']
-        ] = title or "New Chat"
+        ] = conversation_title(user_input)
     
     st.session_state['message_history'].append({'role':'user', 'content': user_input})
     with st.chat_message('user'):
