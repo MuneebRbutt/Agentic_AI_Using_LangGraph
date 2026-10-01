@@ -11,8 +11,12 @@
   --glass-border: rgba(255, 255, 255, 0.09);
 }
 
-html, body, [class*="st-"] {
+html, body, [class*="st-"]:not([class*="material-symbols"]) {
   font-family: 'Inter', sans-serif;
+}
+
+button, input, textarea, select {
+  font-family: inherit;
 }
 
 .stApp,
@@ -39,11 +43,14 @@ footer {
 /* Preserve Streamlit's native expand/collapse affordances. */
 [data-testid="stSidebarCollapsedControl"],
 [data-testid="stSidebarCollapseButton"] {
-  display: flex !important;
   visibility: visible !important;
   opacity: 1 !important;
   pointer-events: auto !important;
   z-index: 10000 !important;
+}
+
+[data-testid="stSidebarCollapsedControl"] {
+  display: flex !important;
 }
 
 [data-testid="stSidebarCollapsedControl"] {
