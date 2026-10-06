@@ -3,7 +3,9 @@
 Uses a temporary SQLite database and a fake model; no API calls or user data.
 """
 
+import importlib.util
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -17,59 +19,59 @@ from streamlit.testing.v1 import AppTest
 APP_DIR = Path(__file__).resolve().parents[1]
 
 
-# The app directory is the import root used by Streamlit entry points.
-sys.path.insert(0, str(APP_DIR))
-
-from chatbot.service import ChatService, create_sqlite_service, thread_config  # noqa: E402
-
-
 class ChatPersistenceTests(unittest.TestCase):
-    def setUp(self) -> None:
+    def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
-        self.database = Path(self.temp_dir.name) / "chatbot.db"
+        self.database = Path(self.temp_dir.name) / 'chatbot.db'
+        self.real_connect = sqlite3.connect
         self.backend = self.load_backend()
-        service_patch = patch(
-            "chatbot.ui.app.get_chat_service", side_effect=lambda: self.backend
+
+    def load_backend(self):
+        spec = importlib.util.spec_from_file_location(
+            'langgraph_database_backend', APP_DIR / 'langgraph_database_backend.py'
         )
-        service_patch.start()
-        self.addCleanup(service_patch.stop)
+        backend = importlib.util.module_from_spec(spec)
+        module_patch = patch.dict(sys.modules, {spec.name: backend})
+        module_patch.start()
+        self.addCleanup(module_patch.stop)
 
-    def load_backend(self) -> ChatService:
-        service = create_sqlite_service(
-            self.database, model=FakeListChatModel(responses=["Saved reply"])
-        )
-        self.addCleanup(service.close)
-        return service
+        def connect(database, **kwargs):
+            self.assertEqual(Path(database), APP_DIR / 'chatbot.db')
+            return self.real_connect(self.database, **kwargs)
 
-    def message_contents(self, app: AppTest) -> list[str]:
-        return [message.markdown[0].value for message in app.chat_message]
+        with patch('sqlite3.connect', side_effect=connect), patch(
+            'langchain_openai.ChatOpenAI', return_value=FakeListChatModel(responses=['Saved reply'])
+        ), patch('dotenv.load_dotenv'):
+            spec.loader.exec_module(backend)
+        self.addCleanup(backend.conn.close)
+        return backend
 
-    def save_chat(self, thread_id: str, message: str) -> None:
-        self.backend.graph.invoke(
+    def save_chat(self, thread_id, message):
+        self.backend.chatbot.invoke(
             {'messages': [HumanMessage(content=message)]},
-            config=thread_config(thread_id),
+            config={'configurable': {'thread_id': thread_id}},
         )
 
-    def open_app(self, query_params: dict | None = None) -> AppTest:
+    def open_app(self, query_params=None):
         app = AppTest.from_file(str(APP_DIR / 'streamlit_database_frontend.py'))
         app.query_params.update(query_params or {})
         app.run()
         self.assertFalse(app.exception)
         return app
 
-    def test_fresh_session_restores_titles_and_latest_history(self) -> None:
+    def test_fresh_session_restores_titles_and_latest_history(self):
         self.save_chat('older', '  First   conversation  ')
         self.save_chat('newer', 'New Chat')
         app = self.open_app()
-        self.assertEqual(self.backend.list_threads(), ['newer', 'older'])
-        self.assertEqual(app.sidebar.button(key='chat_older').help, 'First conversation')
+        self.assertEqual(self.backend.retrieve_all_threads(), ['newer', 'older'])
+        self.assertEqual(app.sidebar.button(key='chat_older').label, 'First conversation')
         # A real conversation named New Chat must not be hidden as a placeholder.
-        self.assertEqual(app.sidebar.button(key='chat_newer').help, 'New Chat')
+        self.assertEqual(app.sidebar.button(key='chat_newer').label, 'New Chat')
         self.assertEqual(app.session_state['thread_id'], 'newer')
-        self.assertEqual(self.message_contents(app), ['New Chat', 'Saved reply'])
+        self.assertEqual([message.value for message in app.text], ['New Chat', 'Saved reply'])
 
-    def test_refresh_keeps_selected_chat_and_continues_its_history(self) -> None:
+    def test_refresh_keeps_selected_chat_and_continues_its_history(self):
         self.save_chat('older', 'First conversation')
         self.save_chat('newer', 'Second conversation')
         app = self.open_app()
@@ -79,17 +81,17 @@ class ChatPersistenceTests(unittest.TestCase):
         # Browser refresh keeps the URL but discards all Streamlit session state.
         refreshed = self.open_app(dict(app.query_params))
         self.assertEqual(refreshed.session_state['thread_id'], 'older')
-        self.assertEqual(self.message_contents(refreshed), ['First conversation', 'Saved reply'])
+        self.assertEqual([message.value for message in refreshed.text], ['First conversation', 'Saved reply'])
         refreshed.chat_input[0].set_value('Follow-up').run()
         self.assertFalse(refreshed.exception)
 
         refreshed_again = self.open_app(dict(refreshed.query_params))
-        self.assertEqual(self.message_contents(refreshed_again), [
+        self.assertEqual([message.value for message in refreshed_again.text], [
             'First conversation', 'Saved reply', 'Follow-up', 'Saved reply',
         ])
-        self.assertEqual(refreshed_again.sidebar.button(key='chat_older').help, 'First conversation')
+        self.assertEqual(refreshed_again.sidebar.button(key='chat_older').label, 'First conversation')
 
-    def test_empty_new_chat_survives_refresh_without_duplicate_buttons(self) -> None:
+    def test_empty_new_chat_survives_refresh_without_duplicate_buttons(self):
         self.save_chat('saved', 'Existing conversation')
         app = self.open_app()
         app.sidebar.button[0].click().run()
@@ -104,46 +106,27 @@ class ChatPersistenceTests(unittest.TestCase):
         self.assertEqual(len(refreshed.sidebar.button), 2)
         refreshed.chat_input[0].set_value('A new conversation').run()
         self.assertFalse(refreshed.exception)
-        self.assertEqual(refreshed.sidebar.button(key=f'chat_{empty_thread}').help, 'A new conversation')
+        self.assertEqual(refreshed.sidebar.button(key=f'chat_{empty_thread}').label, 'A new conversation')
         after_send = self.open_app(dict(refreshed.query_params))
-        self.assertEqual(self.message_contents(after_send), ['A new conversation', 'Saved reply'])
+        self.assertEqual([message.value for message in after_send.text], ['A new conversation', 'Saved reply'])
 
-    def test_invalid_url_falls_back_to_saved_chat(self) -> None:
+    def test_invalid_url_falls_back_to_saved_chat(self):
         self.save_chat('saved', 'Existing conversation')
         app = self.open_app({'thread_id': 'invalid/missing'})
         self.assertEqual(app.session_state['thread_id'], 'saved')
 
-    def test_empty_database_starts_one_empty_chat(self) -> None:
+    def test_empty_database_starts_one_empty_chat(self):
         app = self.open_app()
         self.assertEqual(len(app.sidebar.button), 1)
         self.assertEqual(len(app.chat_message), 0)
         self.assertIsInstance(app.session_state['thread_id'], str)
 
-    def test_history_survives_backend_restart(self) -> None:
+    def test_history_survives_backend_restart(self):
         self.save_chat('saved', 'Remember this conversation')
-        self.backend.close()
+        self.backend.conn.close()
         self.backend = self.load_backend()
         app = self.open_app({'thread_id': 'saved'})
-        self.assertEqual(self.message_contents(app), ['Remember this conversation', 'Saved reply'])
-
-
-    def test_primary_entry_point_uses_the_same_saved_conversation(self) -> None:
-        self.save_chat("saved", "Existing conversation")
-        app = AppTest.from_file(str(APP_DIR / "app.py")).run()
-        self.assertFalse(app.exception)
-        self.assertEqual(self.message_contents(app), ["Existing conversation", "Saved reply"])
-
-    def test_suggestion_streams_and_persists_a_conversation(self) -> None:
-        app = self.open_app()
-        app.button(key="suggestion-✦  Explain a concept").click().run()
-        self.assertFalse(app.exception)
-        thread_id = app.session_state["thread_id"]
-        refreshed = self.open_app(dict(app.query_params))
-        self.assertEqual(
-            self.message_contents(refreshed),
-            ["Explain a concept in simple terms, with an example.", "Saved reply"],
-        )
-        self.assertEqual(self.backend.list_threads(), [thread_id])
+        self.assertEqual([message.value for message in app.text], ['Remember this conversation', 'Saved reply'])
 
 
 if __name__ == '__main__':
