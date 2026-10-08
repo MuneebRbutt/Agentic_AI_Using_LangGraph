@@ -1,7 +1,17 @@
 import streamlit as st 
-from langgraph_backend import chatbot
-from langchain_core.messages import HumanMessage
+from langgraph_tool_backend import chatbot
+from langchain_core.messages import AIMessage, HumanMessage
 import uuid # Importing this to generate dynamic threadids rather than hardcoating it for each conversation.
+
+TOOL_LABELS = {
+    'duckduckgo_search': 'DuckDuckGo search',
+    'get_stock_price': 'Stock price lookup',
+    'calculator': 'Calculator',
+}
+
+
+def tool_labels(tool_names):
+    return ', '.join(TOOL_LABELS.get(name, name) for name in tool_names)
 
 
 
@@ -97,19 +107,37 @@ for thread_id in st.session_state['chat_threads']:
         messages = load_conversation(thread_id)
         
         temp_messages = []
+        tools_used = []
         for message in messages:
             if isinstance(message, HumanMessage):
                 role = 'user'
-            else:
+                tools_used = []
+            elif isinstance(message, AIMessage) and message.tool_calls:
+                for tool_call in message.tool_calls:
+                    if tool_call['name'] not in tools_used:
+                        tools_used.append(tool_call['name'])
+                continue
+            elif isinstance(message, AIMessage) and not message.tool_calls:
                 role = 'assistant'
-            temp_messages.append({'role':role, 'content':message.content})
+            else:
+                continue
+            temp_messages.append({
+                'role': role,
+                'content': message.content,
+                'tools_used': list(tools_used) if role == 'assistant' else [],
+            })
         st.session_state['message_history'] = temp_messages            
 
 CONFIG = {'configurable': {'thread_id': st.session_state['thread_id']}}
 
 for message in st.session_state['message_history']:
     with st.chat_message(message['role']):
-        st.text(message['content'])
+        if message['role'] == 'user':
+            st.text(message['content'])
+        else:
+            if message.get('tools_used'):
+                st.caption(f"Tools used: {tool_labels(message['tools_used'])}")
+            st.markdown(message['content'])
 
 user_input = st.chat_input('Type Here')
 
@@ -127,25 +155,42 @@ if user_input:
     st.session_state['message_history'].append({'role':'user', 'content': user_input})
     with st.chat_message('user'):
         st.text(user_input)
-     
-    
-    # response = chatbot.invoke({'messages': [HumanMessage(content=user_input)]}, config=CONFIG) 
-    # ai_message = response['messages'][-1].content 
-                    
-    with st.chat_message('assistant'):
-        response_placeholder = st.empty()
-        response_text = ""
-        for message_chunk, metadata in chatbot.stream(
-            {'messages': [HumanMessage(content=user_input)]},
-            config=CONFIG,
-            stream_mode='messages'
-        ):
-            response_text += message_chunk.content
-            response_placeholder.markdown(response_text)
 
-        ai_message = response_text
+    # Node updates reveal tool calls before execution without displaying tool output.
+    with st.chat_message('assistant'):
+        tools_used = []
+        ai_message = ''
+        with st.status('Thinking...', expanded=False) as status:
+            for update in chatbot.stream(
+                {'messages': [HumanMessage(content=user_input)]},
+                config=CONFIG,
+                stream_mode='updates',
+            ):
+                for node_name, node_update in update.items():
+                    if not isinstance(node_update, dict):
+                        continue
+                    if node_name == 'tools':
+                        status.update(label='Preparing answer...')
+                    for message in node_update.get('messages', []):
+                        if not isinstance(message, AIMessage):
+                            continue
+                        if message.tool_calls:
+                            current_tools = [call['name'] for call in message.tool_calls]
+                            for name in current_tools:
+                                if name not in tools_used:
+                                    tools_used.append(name)
+                            status.update(label=f'Using {tool_labels(current_tools)}...')
+                        else:
+                            ai_message = message.content
+            status.update(
+                label=f'Tools used: {tool_labels(tools_used)}' if tools_used else 'Answer ready',
+                state='complete',
+            )
+        st.markdown(ai_message)
         
-    st.session_state['message_history'].append({'role':'assistant', 'content': ai_message})
+    st.session_state['message_history'].append({
+        'role': 'assistant', 'content': ai_message, 'tools_used': tools_used,
+    })
     if is_first_message:
         st.rerun()
         
