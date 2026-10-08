@@ -1,62 +1,36 @@
 import queue
-import uuid
 
 import streamlit as st
-from langgraph_mcp_backend import chatbot, retrieve_all_threads, submit_async_task
+from langgraph_mcp_backend import chatbot, retrieve_all_threads, submit_async_task, run_async
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-
-# =========================== Utilities ===========================
-def generate_thread_id():
-    return uuid.uuid4()
-
-
-def reset_chat():
-    thread_id = generate_thread_id()
-    st.session_state["thread_id"] = thread_id
-    add_thread(thread_id)
-    st.session_state["message_history"] = []
-
-
-def add_thread(thread_id):
-    if thread_id not in st.session_state["chat_threads"]:
-        st.session_state["chat_threads"].append(thread_id)
-
+from chat_persistence import (
+    conversation_title, initialize_history, new_conversation, select_conversation,
+)
 
 def load_conversation(thread_id):
-    state = chatbot.get_state(config={"configurable": {"thread_id": thread_id}})
-    # Check if messages key exists in state values, return empty list if not
+    state = run_async(chatbot.aget_state(
+        config={"configurable": {"thread_id": thread_id}}
+    ))
     return state.values.get("messages", [])
 
 
-# ======================= Session Initialization ===================
-if "message_history" not in st.session_state:
-    st.session_state["message_history"] = []
+initialize_history(
+    st.session_state, st.query_params, retrieve_all_threads, load_conversation,
+)
 
-if "thread_id" not in st.session_state:
-    st.session_state["thread_id"] = generate_thread_id()
-
-if "chat_threads" not in st.session_state:
-    st.session_state["chat_threads"] = retrieve_all_threads()
-
-add_thread(st.session_state["thread_id"])
-
-# ============================ Sidebar ============================
 st.sidebar.title("LangGraph MCP Chatbot")
-
 if st.sidebar.button("New Chat"):
-    reset_chat()
+    new_conversation(st.session_state, st.query_params)
 
 st.sidebar.header("My Conversations")
-for thread_id in st.session_state["chat_threads"][::-1]:
-    if st.sidebar.button(str(thread_id)):
-        st.session_state["thread_id"] = thread_id
-        messages = load_conversation(thread_id)
-
-        temp_messages = []
-        for msg in messages:
-            role = "user" if isinstance(msg, HumanMessage) else "assistant"
-            temp_messages.append({"role": role, "content": msg.content})
-        st.session_state["message_history"] = temp_messages
+for thread_id in st.session_state["chat_threads"]:
+    title = st.session_state["chat_titles"].get(thread_id)
+    if title is None:
+        continue
+    if st.sidebar.button(title, key=f"chat_{thread_id}"):
+        select_conversation(
+            st.session_state, st.query_params, thread_id, load_conversation,
+        )
 
 # ============================ Main UI ============================
 
@@ -68,6 +42,13 @@ for message in st.session_state["message_history"]:
 user_input = st.chat_input("Type here")
 
 if user_input:
+    is_first_message = not st.session_state["message_history"]
+    if is_first_message:
+        thread_id = st.session_state["thread_id"]
+        st.session_state["chat_titles"][thread_id] = conversation_title(user_input)
+        if thread_id not in st.session_state["chat_threads"]:
+            st.session_state["chat_threads"].insert(0, thread_id)
+
     # Show user's message
     st.session_state["message_history"].append({"role": "user", "content": user_input})
     with st.chat_message("user"):
@@ -140,3 +121,5 @@ if user_input:
     st.session_state["message_history"].append(
         {"role": "assistant", "content": ai_message}
     )
+    if is_first_message:
+        st.rerun()

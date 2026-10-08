@@ -13,6 +13,7 @@ import aiosqlite
 import requests
 import asyncio
 import threading
+from chat_persistence import database_path
 
 load_dotenv()
 
@@ -108,7 +109,7 @@ tool_node = ToolNode(tools) if tools else None
 
 
 async def _init_checkpointer():
-    conn = await aiosqlite.connect(database="chatbot.db")
+    conn = await aiosqlite.connect(database=database_path())
     return AsyncSqliteSaver(conn)
 
 
@@ -134,9 +135,9 @@ chatbot = graph.compile(checkpointer=checkpointer)
 # 7. Helper
 # -------------------
 async def _alist_threads():
-    all_threads = set()
+    all_threads = {}
     async for checkpoint in checkpointer.alist(None):
-        all_threads.add(checkpoint.config["configurable"]["thread_id"])
+        all_threads.setdefault(str(checkpoint.config["configurable"]["thread_id"]), None)
     return list(all_threads)
 
 

@@ -10,6 +10,7 @@ from langchain_core.tools import tool
 from dotenv import load_dotenv
 import sqlite3
 import requests
+from chat_persistence import database_path
 
 load_dotenv()
 
@@ -86,7 +87,7 @@ tool_node = ToolNode(tools)
 # -------------------
 # 5. Checkpointer
 # -------------------
-conn = sqlite3.connect(database="chatbot.db", check_same_thread=False)
+conn = sqlite3.connect(database=database_path(), check_same_thread=False)
 checkpointer = SqliteSaver(conn=conn)
 
 # -------------------
@@ -107,7 +108,7 @@ chatbot = graph.compile(checkpointer=checkpointer)
 # 7. Helper
 # -------------------
 def retrieve_all_threads():
-    all_threads = set()
+    all_threads = {}
     for checkpoint in checkpointer.list(None):
-        all_threads.add(checkpoint.config["configurable"]["thread_id"])
+        all_threads.setdefault(str(checkpoint.config["configurable"]["thread_id"]), None)
     return list(all_threads)
